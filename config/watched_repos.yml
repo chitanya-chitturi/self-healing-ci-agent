@@ -1,0 +1,3 @@
+# Repos this agent polls for failed CI runs. owner/repo format.
+repos:
+  - chitanya-chitturi/SampleApp

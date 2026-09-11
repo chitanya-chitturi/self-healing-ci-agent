@@ -1,0 +1,40 @@
+name: Watch
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run orchestrator
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          WATCHED_REPOS_PAT: ${{ secrets.WATCHED_REPOS_PAT }}
+        run: python -m agents.orchestrator
+
+      - name: Commit updated state and audit log
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state/ audit/
+          if ! git diff --cached --quiet; then
+            git commit -m "Update agent state and audit log [skip ci]"
+            git push
+          else
+            echo "Nothing to commit."
+          fi

@@ -1,0 +1,26 @@
+# Governance policy checked by agents/governance_agent.py before any
+# auto-fix is allowed to go out as a PR. Every check (pass or fail) is
+# recorded in audit/log.jsonl with its reasoning.
+
+# Global kill switch. Set to false to disable all auto-fixing everywhere
+# without touching any other config.
+enabled: true
+
+# Only these Triage categories are ever eligible for auto-fix. app_bug and
+# infra_flaky are never in this list by design — see README.
+auto_fix_categories:
+  - dependency_issue
+
+# Triage confidence below this always falls back to the notify-a-human path,
+# regardless of category.
+min_confidence: 0.75
+
+# Blast-radius limit: a proposed fix touching more files than this is
+# blocked, even if everything else passes.
+max_files_changed: 1
+
+# Per-repo overrides. A repo can be disabled here without touching the
+# global switch.
+repos:
+  chitanya-chitturi/SampleApp:
+    enabled: true
