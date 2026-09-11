@@ -1,0 +1,24 @@
+# Which LLM endpoint the Triage Agent calls. Any provider that speaks the
+# OpenAI-compatible chat-completions format works here — swapping providers
+# or models is a config change, not a code change.
+#
+# api_key_env names the environment variable holding the API key. That
+# variable must be exposed in .github/workflows/watch.yml's `env:` block
+# under the same name, and set as a repo secret via `gh secret set`.
+
+provider: groq
+base_url: https://api.groq.com/openai/v1/chat/completions
+model: llama-3.3-70b-versatile
+api_key_env: GROQ_API_KEY
+
+# Other providers that work with the same client, uncomment to switch:
+#
+# provider: github-models
+# base_url: https://models.github.ai/inference/chat/completions
+# model: openai/gpt-4o-mini
+# api_key_env: GITHUB_MODELS_TOKEN
+#
+# provider: openai
+# base_url: https://api.openai.com/v1/chat/completions
+# model: gpt-4o-mini
+# api_key_env: OPENAI_API_KEY

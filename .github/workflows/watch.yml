@@ -23,7 +23,13 @@ jobs:
 
       - name: Run orchestrator
         env:
+          # Whichever of these matches config/llm.yml's api_key_env is the
+          # one actually used; the others are simply unread. Add a new line
+          # here (and a matching repo secret) only if you switch to a
+          # provider not already listed.
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WATCHED_REPOS_PAT: ${{ secrets.WATCHED_REPOS_PAT }}
         run: python -m agents.orchestrator
 

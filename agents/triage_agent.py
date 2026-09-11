@@ -1,16 +1,11 @@
-"""Triage Agent: classifies a CI failure's root cause using Groq.
+"""Triage Agent: classifies a CI failure's root cause using whatever LLM
+is configured in config/llm.yml.
 
 Only ever produces a classification — it never decides what to do about it.
 Remediation/Governance/Notifier decide that downstream.
 """
-import json
-import os
-import re
+from lib.llm_client import chat_json
 
-import requests
-
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = "llama-3.3-70b-versatile"
 MAX_LOG_CHARS = 8000
 
 SYSTEM_PROMPT = """You are a CI/CD failure triage assistant. You will be given \
@@ -38,38 +33,11 @@ immediately, citing the specific test/file/error from the log>"
 """
 
 
-def _extract_json(text: str) -> dict:
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        return json.loads(match.group(0))
-    raise ValueError(f"Could not parse JSON from model response: {text!r}")
-
-
 def classify(log_text: str) -> dict:
-    api_key = os.environ["GROQ_API_KEY"]
-    payload = {
-        "model": MODEL,
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Build log tail:\n\n{log_text[-MAX_LOG_CHARS:]}"},
-        ],
-    }
-    resp = requests.post(
-        GROQ_URL,
-        json=payload,
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=60,
+    result = chat_json(
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=f"Build log tail:\n\n{log_text[-MAX_LOG_CHARS:]}",
     )
-    resp.raise_for_status()
-    content = resp.json()["choices"][0]["message"]["content"]
-    result = _extract_json(content)
-
     result.setdefault("category", "app_bug")
     result.setdefault("confidence", 0.0)
     result.setdefault("root_cause", "")

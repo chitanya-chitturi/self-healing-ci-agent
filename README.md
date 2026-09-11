@@ -65,11 +65,35 @@ Every Governance check — approved or blocked — is written to
 and Notifier action. That file is the full audit trail: what the agent saw,
 what it decided, and why, for every run it ever processed.
 
+## LLM provider
+
+The Triage Agent calls whatever's configured in `config/llm.yml` — `lib/llm_client.py`
+has no provider-specific code, it just speaks the OpenAI-compatible
+chat-completions format that Groq, GitHub Models, OpenAI, and most other
+providers all support. Switching providers or models is a one-line config
+edit, not a code change:
+
+```yaml
+provider: groq
+base_url: https://api.groq.com/openai/v1/chat/completions
+model: llama-3.3-70b-versatile
+api_key_env: GROQ_API_KEY
+```
+
+`api_key_env` names the environment variable the client reads the API key
+from. `.github/workflows/watch.yml` already exposes `GROQ_API_KEY`,
+`GITHUB_MODELS_TOKEN`, and `OPENAI_API_KEY` (each from a same-named repo
+secret) — commented-out examples for both are in `config/llm.yml`, so
+switching between those three is just uncommenting one block. Only a
+provider not already listed there needs a new line added to the workflow's
+`env:` block plus a matching secret.
+
 ## Setup
 
 1. **Watched repos**: list them in `config/watched_repos.yml`.
-2. **Groq API key**: `gh secret set GROQ_API_KEY` on this repo (free tier at
-   [console.groq.com](https://console.groq.com)).
+2. **LLM API key**: `gh secret set GROQ_API_KEY` on this repo (free tier at
+   [console.groq.com](https://console.groq.com)) — or whichever secret name
+   matches `api_key_env` in `config/llm.yml` if you've switched providers.
 3. **Watched-repo access**: create a fine-grained GitHub PAT scoped to
    exactly the repos in `watched_repos.yml`, with:
    - Contents: Read and write
