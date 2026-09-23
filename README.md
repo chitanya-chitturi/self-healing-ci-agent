@@ -123,3 +123,162 @@ repo for this agent to discover and react to on its next poll.
   already-processed runs. It doesn't yet track patterns over time (e.g. "this
   test has failed 5 times this month"), which would need a real persistence
   decision beyond a per-repo last-run-id file.
+
+## Same architecture, different toolkits (LangGraph & ADK)
+
+This repo deliberately uses no agent framework — every piece of control
+flow in `orchestrator.py` is a plain `if`/`return`, so nothing about how
+this actually works is hidden behind an abstraction. For comparison, here's
+how the exact same design would map onto **LangGraph** and onto Google's
+**ADK**, reusing the real function names from this codebase. These are
+illustrative sketches to show the shape of each mapping, not tested code.
+
+### If this were LangGraph
+
+LangGraph's explicit nodes and conditional edges map almost one-to-one onto
+`process_failure()`'s existing branches — porting this would mostly mean
+turning that function's `if`/`return` chain into graph wiring, not
+rewriting any of the underlying logic.
+
+```mermaid
+flowchart TD
+  START([New failed run]) --> T[triage_node]
+  T -->|infra_flaky| NF[notify_flaky_node]
+  T -->|dependency_issue / app_bug| R[remediation_node]
+  R -->|no fix proposed| ND[notify_diagnosis_node]
+  R -->|fix proposed| G[governance_node]
+  G -->|approved| NP[notify_pr_node]
+  G -->|blocked| ND
+  NF --> DONE([done])
+  ND --> DONE
+  NP --> DONE
+```
+
+```python
+from typing import TypedDict, Optional
+from langgraph.graph import StateGraph, END
+
+class CIState(TypedDict):
+    repo: str
+    run: dict
+    triage_result: Optional[dict]
+    proposed_fix: Optional[dict]
+    governance_result: Optional[dict]
+    notification: Optional[dict]
+
+def triage_node(state: CIState) -> CIState:
+    log_text = client.get_run_log_text(state["repo"], state["run"]["id"])
+    return {**state, "triage_result": triage_agent.classify(log_text)}
+
+def remediation_node(state: CIState) -> CIState:
+    fix = remediation_agent.propose_fix(client, state["repo"], state["run"], state["triage_result"])
+    return {**state, "proposed_fix": fix}
+
+def governance_node(state: CIState) -> CIState:
+    result = governance_agent.evaluate(policy, state["repo"], state["triage_result"], state["proposed_fix"])
+    return {**state, "governance_result": result}
+
+def route_after_triage(state: CIState) -> str:
+    return "notify_flaky" if state["triage_result"]["category"] == "infra_flaky" else "remediation"
+
+def route_after_remediation(state: CIState) -> str:
+    return "governance" if state["proposed_fix"] else "notify_diagnosis"
+
+def route_after_governance(state: CIState) -> str:
+    return "notify_pr" if state["governance_result"]["approved"] else "notify_diagnosis"
+
+graph = StateGraph(CIState)
+graph.add_node("triage", triage_node)
+graph.add_node("remediation", remediation_node)
+graph.add_node("governance", governance_node)
+graph.add_node("notify_flaky", lambda s: {**s, "notification": notifier_agent.flag_flaky(client, s["repo"], s["run"], s["triage_result"])})
+graph.add_node("notify_diagnosis", lambda s: {**s, "notification": notifier_agent.post_diagnosis_issue(client, s["repo"], s["run"], s["triage_result"], s.get("governance_result"))})
+graph.add_node("notify_pr", lambda s: {**s, "notification": notifier_agent.open_remediation_pr(client, s["repo"], s["run"], s["triage_result"], s["proposed_fix"], s["governance_result"])})
+
+graph.set_entry_point("triage")
+graph.add_conditional_edges("triage", route_after_triage, {"notify_flaky": "notify_flaky", "remediation": "remediation"})
+graph.add_conditional_edges("remediation", route_after_remediation, {"governance": "governance", "notify_diagnosis": "notify_diagnosis"})
+graph.add_conditional_edges("governance", route_after_governance, {"notify_pr": "notify_pr", "notify_diagnosis": "notify_diagnosis"})
+for end_node in ("notify_flaky", "notify_diagnosis", "notify_pr"):
+    graph.add_edge(end_node, END)
+
+app = graph.compile()
+```
+
+Note what stays identical: `triage_agent.classify`, `remediation_agent.propose_fix`,
+`governance_agent.evaluate`, and every `notifier_agent` function are called
+completely unchanged. LangGraph only replaces the *wiring* around them.
+
+### If this were ADK
+
+ADK's idiomatic shape for this kind of branchy, tool-using job is a single
+`LlmAgent` holding all four downstream actions as tools, with the model's
+own reasoning — driven by its instructions — deciding which to call and
+when, rather than code-defined edges deciding for it.
+
+```mermaid
+flowchart TD
+  START([New failed run]) --> A["LlmAgent: ci_triage_orchestrator
+  (classifies the log, then decides)"]
+  A -.->|"if dependency_issue"| PF["tool: propose_fix_tool()"]
+  A -.->|"if a fix comes back"| GV["tool: evaluate_governance_tool()"]
+  A -.->|"model's own choice"| N1["tool: open_remediation_pr_tool()"]
+  A -.->|"model's own choice"| N2["tool: post_diagnosis_issue_tool()"]
+  A -.->|"if infra_flaky"| N3["tool: flag_flaky_tool()"]
+```
+
+*(Dashed arrows above are deliberate — see the trade-off note below.)*
+
+```python
+from google.adk.agents import LlmAgent
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+
+def propose_fix_tool(triage_category: str, repo: str, run_id: int) -> dict:
+    """Wraps remediation_agent.propose_fix. Returns a fix, or an empty
+    result if none can be confidently proposed."""
+    ...
+
+def evaluate_governance_tool(repo: str, category: str, confidence: float, files_changed: int) -> dict:
+    """Wraps governance_agent.evaluate against policy.yml."""
+    ...
+
+def open_remediation_pr_tool(...) -> dict: ...   # wraps notifier_agent.open_remediation_pr
+def post_diagnosis_issue_tool(...) -> dict: ...  # wraps notifier_agent.post_diagnosis_issue
+def flag_flaky_tool(...) -> dict: ...            # wraps notifier_agent.flag_flaky
+
+ci_triage_orchestrator = LlmAgent(
+    name="ci_triage_orchestrator",
+    model="gemini-2.0-flash",
+    instructions="""Classify the CI failure from the log tail as infra_flaky,
+    dependency_issue, or app_bug. If infra_flaky, call flag_flaky_tool.
+    Otherwise call propose_fix_tool. If it returns no fix, call
+    post_diagnosis_issue_tool. If a fix comes back, call
+    evaluate_governance_tool; if approved, call open_remediation_pr_tool —
+    otherwise call post_diagnosis_issue_tool.""",
+    tools=[propose_fix_tool, evaluate_governance_tool,
+           open_remediation_pr_tool, post_diagnosis_issue_tool, flag_flaky_tool],
+)
+
+session_service = InMemorySessionService()
+runner = Runner(agent=ci_triage_orchestrator, app_name="ci_healer", session_service=session_service)
+```
+
+### The trade-off this comparison actually reveals
+
+In both the real hand-rolled version and the LangGraph sketch,
+`governance_agent.evaluate()` runs **unconditionally in code** — there is no
+path through `process_failure()`, or through the LangGraph graph's edges,
+that reaches `open_remediation_pr` without governance approving first. It's
+enforced the same way a wall enforces itself: nothing gets past it because
+nothing else runs.
+
+In the ADK sketch, that guarantee moves into the *instructions* — the model
+is told to always call the governance tool before opening a PR, but nothing
+in the code forces it to. A confused or adversarially-prompted model could,
+in principle, call `open_remediation_pr_tool` directly. That's a concrete,
+real-stakes version of the guardrails point from `agentic-patterns-explained`:
+**an instruction is not a boundary.** If this were actually rebuilt in ADK,
+the fix would be to keep governance as deterministic code the tool itself
+runs before doing anything irreversible — not something the model has to
+remember to call — rather than trusting the prompt alone.
